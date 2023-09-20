@@ -35,7 +35,7 @@ void errorCheck(int* a, int* b, int* c, const unsigned int arraySize) {
     }
 }
 
-int main() 
+int mainAdd() 
 {
     const unsigned int arraySize = 500;
     int a[arraySize] = {};
