@@ -12,21 +12,11 @@
 
 cudaError_t addVecWithCuda(int *c,  int *a,  int *b, const unsigned int size);
 
-cudaError_t addMatrixWithCuda(int** c, int** a, int** b, const unsigned int rows, const unsigned int cols);
-
 __global__ void addVecKernel(int* c, int* a, int* b, const unsigned int size)
 {
     unsigned int i = (blockIdx.x * blockDim.x) + threadIdx.x;
     if (i < size) {
         c[i] = a[i] + b[i];
-    }
-}
-
-__global__ void addMatrixKernel(int** c, int** a, int** b, const unsigned int rows, const unsigned int cols)
-{
-    unsigned int i = (blockIdx.x * blockDim.x) + threadIdx.x;
-    if (i < cols * rows) {
-        c[i / cols][i % rows] = a[i / cols][i % rows] + b[i / cols][i % rows];
     }
 }
 
@@ -38,6 +28,7 @@ void genRandVec(int* v, const unsigned int arraySize) {
 
 void genRandMatrix(int** M, const unsigned int n, const unsigned int m) {
     for (unsigned int i = 0; i < n; i++) {
+        M[i] = new int[m];
         genRandVec(M[i], m);
     }
 }
@@ -63,18 +54,44 @@ void errorCheckMatrixAdd(int** a, int** b, int** c, const unsigned int rows, con
     }
 }
 
-int main() 
+//Take a matrix m and flatten it into a flat vector f
+void flattenMatrix(int* f, int** m, const unsigned int rows, const unsigned int cols) {
+    for (unsigned int i = 0; i < rows; i++) {
+        for (unsigned int j = 0; i < cols; j++) {
+            f[i * cols + j] = m[i][j];
+        }
+    }
+}
+
+void unFlattenMatrix(int** m, int* f, const unsigned int rows, const unsigned int cols) {
+    for (unsigned int i = 0; i < rows; i++) {
+        for (unsigned int j = 0; i < cols; j++) {
+            m[i][j] = f[i * cols + j];
+        }
+    }
+}
+
+int main()
 {
-    const unsigned int COLS = 50;
-    const unsigned int ROWS = 25;
-    int** a;
-    int** b;
+    const unsigned int COLS = 5;
+    const unsigned int ROWS = 5;
+    int* a[ROWS];
+    int* b[ROWS];
     genRandMatrix(a, ROWS, COLS);
     genRandMatrix(b, ROWS, COLS);
-    int** c;
+    printf("Matrices generated successfully");
+    int* c[ROWS];
 
+    //Flatten matrices
+    int a_f[ROWS * COLS];
+    int b_f[ROWS * COLS];
+    int c_f[ROWS * COLS];
+
+    flattenMatrix(a_f, a, ROWS, COLS);
+    flattenMatrix(b_f, b, ROWS, COLS);
     // Add vectors in parallel.
-    cudaError_t cudaStatus = addMatrixWithCuda(c, a, b, ROWS, COLS);
+    printf("Vectors flattened successfully");
+    cudaError_t cudaStatus = addVecWithCuda(c_f, a_f, b_f, ROWS * COLS);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "addWithCuda failed!");
         return 1;
@@ -90,18 +107,20 @@ int main()
         fprintf(stderr, "cudaDeviceReset failed!");
         return 1;
     }
-    errorCheckMatrixAdd(a, b, c, ROWS, COLS);
+    unFlattenMatrix(c, c_f, ROWS, COLS);
+    //errorCheckMatrixAdd(a, b, c, ROWS, COLS);
     printf("Successful with %d by %d Matrix! of length", ROWS, COLS);
     return 0;
 }
 
 // Helper function for using CUDA to add vectors in parallel.
-cudaError_t addMatrixWithCuda(int **c, int **a, int **b, const unsigned int rows, const unsigned int cols)
-//should actually be the same as vector add and just convert 2d array to 1d array
+cudaError_t addVecWithCuda(int *c, int *a, int *b, const unsigned int size)
+//should actually be the same as vector add and just convert 2d array to 1d array to save GMEM accesses
 {
-    int ** dev_a;
-    int ** dev_b;
-    int ** dev_c;
+    
+    int * dev_a;
+    int * dev_b;
+    int * dev_c;
     cudaError_t cudaStatus;
 
     // Choose which GPU to run on, change this on a multi-GPU system.
@@ -112,39 +131,39 @@ cudaError_t addMatrixWithCuda(int **c, int **a, int **b, const unsigned int rows
     }
 
     // Allocate GPU buffers for three vectors (two input, one output)    .
-    cudaStatus = cudaMalloc((void**)&dev_c, rows * cols * sizeof(unsigned int));
+    cudaStatus = cudaMalloc((void**)&dev_c, size * sizeof(int));
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc failed!");
         goto Error;
     }
 
-    cudaStatus = cudaMalloc((void**)&dev_a, rows * cols * sizeof(unsigned int));
+    cudaStatus = cudaMalloc((void**)&dev_a, size * sizeof( int));
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc failed!");
         goto Error;
     }
 
-    cudaStatus = cudaMalloc((void**)&dev_b, rows * cols * sizeof(unsigned int));
+    cudaStatus = cudaMalloc((void**)&dev_b, size * sizeof(int));
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc failed!");
         goto Error;
     }
 
     // Copy input vectors from host memory to GPU buffers.
-    cudaStatus = cudaMemcpy(dev_a, a, rows * cols * sizeof(unsigned int), cudaMemcpyHostToDevice);
+    cudaStatus = cudaMemcpy(dev_a, a, size * sizeof( int), cudaMemcpyHostToDevice);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMemcpy failed!");
         goto Error;
     }
 
-    cudaStatus = cudaMemcpy(dev_b, b, rows * cols * sizeof(unsigned int), cudaMemcpyHostToDevice);
+    cudaStatus = cudaMemcpy(dev_b, b, size * sizeof(int), cudaMemcpyHostToDevice);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMemcpy failed!");
         goto Error;
     }
 
     // Launch a kernel on the GPU with one thread for each element.
-    addMatrixKernel << < cols, rows>> > (dev_c, dev_a, dev_b, rows, cols);
+    addVecKernel << < 1, size >> > (dev_c, dev_a, dev_b, size);
 
     // Check for any errors launching the kernel
     cudaStatus = cudaGetLastError();
@@ -162,7 +181,7 @@ cudaError_t addMatrixWithCuda(int **c, int **a, int **b, const unsigned int rows
     }
 
     // Copy output vector from GPU buffer to host memory.
-    cudaStatus = cudaMemcpy(c, dev_c, rows * cols * sizeof(unsigned int), cudaMemcpyDeviceToHost);
+    cudaStatus = cudaMemcpy(c, dev_c, size * sizeof( int), cudaMemcpyDeviceToHost);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMemcpy failed!");
         goto Error;
